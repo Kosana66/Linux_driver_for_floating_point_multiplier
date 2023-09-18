@@ -43,22 +43,20 @@ MODULE_LICENSE("Dual BSD/GPL");
 /* -------------------------------------- */
 
 #define MAX_PKT_LEN				4
-#define MM2S_DMACR_REG			0x00
+#define MM2S_DMACR_REG				0x00
 #define MM2S_SA_REG				0x18
 #define MM2S_LENGTH_REG			0x28
 #define MM2S_STATUS_REG			0x04
 
-#define S2MM_DMACR_REG			0x30
+#define S2MM_DMACR_REG				0x30
 #define S2MM_DA_REG				0x48
 #define S2MM_LENGTH_REG			0x58
 #define S2MM_STATUS_REG			0x34
 
-#define DMACR_RUN_STOP			1<<1
+#define DMACR_RUN_STOP				1<<1
 #define DMACR_RESET				1<<2
 #define IOC_IRQ_EN				1<<12
 #define ERR_IRQ_EN				1<<14
-
-
 
 
 /* -------------------------------------- */
@@ -71,7 +69,7 @@ int         fpm_open(struct inode *pinode, struct file *pfile);
 int         fpm_close(struct inode *pinode, struct file *pfile);
 ssize_t     fpm_read(struct file *pfile, char __user *buffer, size_t length, loff_t *offset);
 ssize_t     fpm_write(struct file *pfile, const char __user *buffer, size_t length, loff_t *offset);
-static int 	fpm_mmap(struct file *f, struct vm_area_struct *vma_s);
+static int  fpm_mmap(struct file *f, struct vm_area_struct *vma_s);
 
 static int  __init fpm_init(void);
 static void __exit fpm_exit(void);
@@ -135,7 +133,9 @@ static struct platform_driver fpm_driver = {
 dma_addr_t tx_phy_buffer;
 u32 tx_vir_buffer;
 int device_fsm = 0;
-int transaction_over = 0;
+int transaction_over0 = 0;
+int transaction_over1 = 0;
+int transaction_over2 = 0;
 
 /* -------------------------------------- */
 /* -------INIT AND EXIT FUNCTIONS-------- */
@@ -493,11 +493,56 @@ int fpm_close(struct inode *pinode, struct file *pfile) {
 /* -------------------------------------- */
 
 ssize_t fpm_read(struct file *pfile, char __user *buf, size_t length, loff_t *offset) {		
+	char buff[BUFF_SIZE];
+
+
+
+
+
+
+
+
+	ret = copy_to_user(buf, buff, length);
+	if(ret) {
+		printk(KERN_WARNING "[fpm_read] Copy to user failed\n");
+		return -EFAULT;
+	}
 	printk(KERN_INFO "[fpm_read] Succesfully read driver\n");
 	return 0;
 }
 
 ssize_t fpm_write(struct file *pfile, const char __user *buf, size_t length, loff_t *offset) {
+	char buff[BUFF_SIZE];
+	char hexString1[10];
+	char hexString2[10];
+	u32 hexNum1;
+	u32 hexNum2;
+	int ret = 0;
+	ret = copy_from_user(buff, buf, length);  
+    if (ret) {
+        printk(KERN_WARNING "[fpm_write] Copy from user failed\n");
+        return -EFAULT;
+    }
+	buff[length] = '\0';
+	ret = sscanf(buff, "%10[^,], %10[^ ] ", &hexString1, &hexString2);
+	if(ret != 2){
+		printk(KERN_WARNING "[fpm_write] Parsing failed\n");
+        return -EFAULT;
+	}
+	if(!(hexString1[0]=='0' && (hexString1[1]=='x' || hexString1[1]=='X'))) {
+		printk(KERN_WARNING "[fpm_write] Invalid conversion of first number.\n");
+        return -EFAULT;
+	}
+	ret = kstrtol(hexString1+2,16,&hexNum1);
+	transaction_over0 = 1;
+	dma_simple_write1(tx_phy_buffer, hexNum1, dma0_p->base_addr);
+	if(!(hexString2[0]=='0' && (hexString2[1]=='x' || hexString2[1]=='X'))) {
+		printk(KERN_WARNING "[fpm_write] Invalid conversion of second number.\n");
+        return -EFAULT;
+	}
+	ret = kstrtol(hexString2+2,16,&hexNum2);
+	transaction_over1 = 1;
+	dma_simple_write2(tx_phy_buffer, hexNum2, dma0_p->base_addr);
 	printk(KERN_INFO "[fpm_write] Succesfully wrote in driver\n");
 	return 0;
 }
@@ -523,11 +568,6 @@ static int fpm_mmap(struct file *f, struct vm_area_struct *vma_s) {
 	}
 	return 0;
 }
-
-/* -------------------------------------- */
-/* ------INTERRUPT SERVICE ROUTINES------ */
-/* -------------------------------------- */
-
 
 /* -------------------------------------- */
 /* ------------DMA FUNCTIONS------------- */
@@ -569,6 +609,10 @@ unsigned int dma_simple_read(dma_addr_t TxBufferPtr, unsigned int pkt_len, void 
 	return 0;
 }
 
+/* -------------------------------------- */
+/* ------INTERRUPT SERVICE ROUTINES------ */
+/* -------------------------------------- */
+
 static irqreturn_t dma0_MM2S_isr(int irq, void* dev_id) {
 	unsigned int IrqStatus;  
 	/* DMA0 transaction has been complited and interrupt occures, flag needs to be cleared */
@@ -576,7 +620,7 @@ static irqreturn_t dma0_MM2S_isr(int irq, void* dev_id) {
 	IrqStatus = ioread32(dma0_p->base_addr + MM2S_STATUS_REG);
 	iowrite32(IrqStatus | 0x00005000, dma0_p->base_addr + MM2S_STATUS_REG);
 	/* Tell rest of the code that interrupt has happened */
-	transaction_over = 0;
+	transaction_over0 = 0;
 	printk(KERN_INFO "[dma0_isr] Finished DMA0 MM2S transaction!\n");
 	return IRQ_HANDLED;
 }
@@ -587,7 +631,7 @@ static irqreturn_t dma1_MM2S_isr(int irq, void* dev_id) {
 	IrqStatus = ioread32(dma1_p->base_addr + MM2S_STATUS_REG);
 	iowrite32(IrqStatus | 0x00005000, dma1_p->base_addr + MM2S_STATUS_REG);
 	/* Tell rest of the code that interrupt has happened */
-	transaction_over = 0;
+	transaction_over1 = 0;
 	printk(KERN_INFO "[dma1_isr] Finished DMA1 MM2S transaction!\n");
 	return IRQ_HANDLED;
 }
@@ -598,7 +642,7 @@ static irqreturn_t dma2_S2MM_isr(int irq, void* dev_id){
 	IrqStatus = ioread32(dma2_p->base_addr + S2MM_STATUS_REG);
 	iowrite32(IrqStatus | 0x00005000, dma2_p->base_addr + S2MM_STATUS_REG);
 	/* Tell rest of the code that interrupt has happened */
-	transaction_over = 0;
+	transaction_over2 = 0;
 	printk(KERN_INFO "[dma2_isr] Finished DMA2 S2MM transaction!\n");
 	return IRQ_HANDLED;
 }
