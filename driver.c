@@ -98,9 +98,7 @@ struct fpm_info {
 
 dev_t my_dev_id;
 static struct class *my_class;
-static struct device *my_device_dma0;
-static struct device *my_device_dma1;
-static struct device *my_device_dma2;
+static struct device *my_device;
 static struct cdev *my_cdev;
 static struct fpm_info *dma0_p = NULL;
 static struct fpm_info *dma1_p = NULL;
@@ -134,12 +132,8 @@ static struct platform_driver fpm_driver = {
 	.remove		= fpm_remove,
 };
 
-dma_addr_t tx_phy_buffer0;
-u32 *tx_vir_buffer0;
-dma_addr_t tx_phy_buffer1;
-u32 *tx_vir_buffer1;
-dma_addr_t tx_phy_buffer2;
-u32 *tx_vir_buffer2;
+dma_addr_t tx_phy_buffer;
+u32 tx_vir_buffer;
 int device_fsm = 0;
 int transaction_over = 0;
 
@@ -153,7 +147,7 @@ static int __init fpm_init(void) {
 	printk(KERN_INFO "[fpm_init] Initialize Module \"%s\"\n", DRIVER_NAME);
 
 	/* Dynamically allocate MAJOR and MINOR numbers. */
-	ret = alloc_chrdev_region(&my_dev_id, 0, 3, "fpm_region");
+	ret = alloc_chrdev_region(&my_dev_id, 0, 1, "fpm_region");
 	if(ret) {
 		printk(KERN_ALERT "[fpm_init] Failed CHRDEV!\n");
 		return -1;
@@ -169,143 +163,65 @@ static int __init fpm_init(void) {
 	}
 	printk(KERN_INFO "[fpm_init] Successful class chardev create!\n");
 	/* Secondly, device_create is used to create devices in a region. */
-	my_device_dma0 = device_create(my_class, NULL, MKDEV(MAJOR(my_dev_id), 0), NULL, "dma0");
-	if(my_device_dma0 == NULL) {
+	my_device = device_create(my_class, NULL, MKDEV(MAJOR(my_dev_id), 0), NULL, "fpmult");
+	if(my_device == NULL) {
 		goto fail_1;
 	}
-	printk(KERN_INFO "[fpm_init] Device dma0 created\n");
-	my_device_dma1 = device_create(my_class, NULL, MKDEV(MAJOR(my_dev_id), 1), NULL, "dma1");
-	if(my_device_dma1 == NULL) {
-		goto fail_2;
-	}
-	printk(KERN_INFO "[fpm_init] Device dma1 created\n");
-	my_device_dma2 = device_create(my_class, NULL, MKDEV(MAJOR(my_dev_id), 2), NULL, "dma2");
-	if(my_device_dma2 == NULL) {
-		goto fail_3;
-	}
-	printk(KERN_INFO "[fpm_init] Device dma2 created\n");
+	printk(KERN_INFO "[fpm_init] Device fpmult created\n");
 
 	my_cdev = cdev_alloc();	
 	my_cdev->ops = &my_fops;
 	my_cdev->owner = THIS_MODULE;
-	ret = cdev_add(my_cdev, my_dev_id, 3);
+	ret = cdev_add(my_cdev, my_dev_id, 1);
 	if(ret) {
 		printk(KERN_ERR "[fpm_init] Failed to add cdev\n");
-		goto fail_4;
+		goto fail_2;
 	}
 	printk(KERN_INFO "[fpm_init] Module init done\n");
 
 	/* Making sure that virtual addresses are mapped to physical addresses that are coherent */
-	ret = dma_set_coherent_mask(my_device_dma0, DMA_BIT_MASK(64));
+	ret = dma_set_coherent_mask(my_device, DMA_BIT_MASK(32));
 	if(ret < 0) {
-		printk(KERN_WARNING "[fpm_init] DMA0 coherent mask not set!\n");
+		printk(KERN_WARNING "[fpm_init] DMA coherent mask not set!\n");
 	}
 	else {
-		printk(KERN_INFO "[fpm_init] DMA0 coherent mask set\n");
-	}
-	ret = dma_set_coherent_mask(my_device_dma1, DMA_BIT_MASK(64));
-	if(ret < 0) {
-		printk(KERN_WARNING "[fpm_init] DMA1 coherent mask not set!\n");
-	}
-	else {
-		printk(KERN_INFO "[fpm_init] DMA1 coherent mask set\n");
-	}
-	ret = dma_set_coherent_mask(my_device_dma2, DMA_BIT_MASK(64));
-	if(ret < 0) {
-		printk(KERN_WARNING "[fpm_init] DMA2 coherent mask not set!\n");
-	}
-	else {
-		printk(KERN_INFO "[fpm_init] DMA2 coherent mask set\n");
+		printk(KERN_INFO "[fpm_init] DMA coherent mask set\n");
 	}
 
-	tx_vir_buffer0 = dma_alloc_coherent(my_device_dma0, MAX_PKT_LEN, &tx_phy_buffer0, GFP_KERNEL);
-	printk(KERN_INFO "[fpm_init] Virtual and physical addresses for dma0 coherent starting at %x and ending at %x\n", tx_phy_buffer0, tx_phy_buffer0+(uint)(MAX_PKT_LEN));
-	if(!tx_vir_buffer0) {
-		printk(KERN_ALERT "[fpm_init] Could not allocate dma_alloc_coherent for dma0");
-		goto fail_5;
+	tx_vir_buffer = dma_alloc_coherent(my_device, MAX_PKT_LEN, tx_phy_buffer, GFP_KERNEL);
+	printk(KERN_INFO "[fpm_init] Virtual and physical addresses coherent starting at %x and ending at %x\n", tx_phy_buffer, tx_phy_buffer+(uint)(MAX_PKT_LEN));
+	if(!tx_vir_buffer) {
+		printk(KERN_ALERT "[fpm_init] Could not allocate dma_alloc_coherent");
+		goto fail_3;
 	}
 	else {
-		printk("[fpm_init] Successfully allocated memory for dma0 transaction buffer\n");
+		printk("[fpm_init] Successfully allocated memory for transaction buffer\n");
 	}
-	for (int i = 0; i < MAX_PKT_LEN/4; i++) {
-		tx_vir_buffer0[i] = 0x00000000;
-	}
-	printk(KERN_INFO "[fpm_init] DMA0 memory reset.\n");
-	tx_vir_buffer1 = dma_alloc_coherent(my_device_dma1, MAX_PKT_LEN, &tx_phy_buffer1, GFP_KERNEL);
-	printk(KERN_INFO "[fpm_init] Virtual and physical addresses for dma1 coherent starting at %x and ending at %x\n", tx_phy_buffer1, tx_phy_buffer1+(uint)(MAX_PKT_LEN));
-	if(!tx_vir_buffer1) {
-		printk(KERN_ALERT "[fpm_init] Could not allocate dma_alloc_coherent for dma1");
-		goto fail_6;
-	}
-	else {
-		printk("[fpm_init] Successfully allocated memory for dma1 transaction buffer\n");
-	}
-	for (int i = 0; i < MAX_PKT_LEN/4; i++) {
-		tx_vir_buffer1[i] = 0x00000000;
-	}
-	printk(KERN_INFO "[fpm_init] DMA1 memory reset.\n");
-	tx_vir_buffer2 = dma_alloc_coherent(my_device_dma2, MAX_PKT_LEN, &tx_phy_buffer2, GFP_KERNEL);
-	printk(KERN_INFO "[fpm_init] Virtual and physical addresses for dma2 coherent starting at %x and ending at %x\n", tx_phy_buffer2, tx_phy_buffer2+(uint)(MAX_PKT_LEN));
-	if(!tx_vir_buffer2) {
-		printk(KERN_ALERT "[fpm_init] Could not allocate dma_alloc_coherent for dma2");
-		goto fail_7;
-	}
-	else {
-		printk("[fpm_init] Successfully allocated memory for dma2 transaction buffer\n");
-	}
-	for (int i = 0; i < MAX_PKT_LEN/4; i++) {
-		tx_vir_buffer2[i] = 0x00000000;
-	}
-	printk(KERN_INFO "[fpm_init] DMA2 memory reset.\n");
+	tx_vir_buffer = 0x00000000;
+	printk(KERN_INFO "[fpm_init] Memory reset.\n");
 	return platform_driver_register(&fpm_driver);
 	
-	fail_7:
-		for (int i = 0; i < MAX_PKT_LEN/4; i++) 
-			tx_vir_buffer1[i] = 0x00000000;
-		dma_free_coherent(NULL, MAX_PKT_LEN, tx_vir_buffer1, tx_phy_buffer1);
-	fail_6:
-		for (int i = 0; i < MAX_PKT_LEN/4; i++) 
-			tx_vir_buffer0[i] = 0x00000000;
-		dma_free_coherent(NULL, MAX_PKT_LEN, tx_vir_buffer0, tx_phy_buffer0);
-	fail_5:
-		cdev_del(my_cdev);
-	fail_4:
-		device_destroy(my_class, MKDEV(MAJOR(my_dev_id),2));
 	fail_3:
-		device_destroy(my_class, MKDEV(MAJOR(my_dev_id),1));
+		cdev_del(my_cdev);
 	fail_2:
 		device_destroy(my_class, MKDEV(MAJOR(my_dev_id),0));
 	fail_1:
 		class_destroy(my_class);
 	fail_0:
-		unregister_chrdev_region(my_dev_id, 3);
+		unregister_chrdev_region(my_dev_id, 1);
 	return -1;
 } 
 
 /* Exit function being called and executed only once by rmmod command. */
 static void __exit fpm_exit(void) {
-	//Reset DMA memory
-	for (int i = 0; i < MAX_PKT_LEN/4; i++) 
-		tx_vir_buffer0[i] = 0x00000000;
-	printk(KERN_INFO "[fpm_exit] DMA0 memory reset\n");
-	for (int i = 0; i < MAX_PKT_LEN/4; i++) 
-		tx_vir_buffer1[i] = 0x00000000;
-	printk(KERN_INFO "[fpm_exit] DMA1 memory reset\n");
-	for (int i = 0; i < MAX_PKT_LEN/4; i++) 
-		tx_vir_buffer2[i] = 0x00000000;
-	printk(KERN_INFO "[fpm_exit] DMA2 memory reset\n");
-	
+	tx_vir_buffer = 0x00000000;
 	/* Exit Device Module */
 	platform_driver_unregister(&fpm_driver);
 	cdev_del(my_cdev);
-	device_destroy(my_class, MKDEV(MAJOR(my_dev_id),2));
-	device_destroy(my_class, MKDEV(MAJOR(my_dev_id),1));
 	device_destroy(my_class, MKDEV(MAJOR(my_dev_id),0));
 	class_destroy(my_class);
-	unregister_chrdev_region(my_dev_id, 3);
-	dma_free_coherent(NULL, MAX_PKT_LEN, tx_vir_buffer2, tx_phy_buffer2);
-	dma_free_coherent(NULL, MAX_PKT_LEN, tx_vir_buffer0, tx_phy_buffer1);	
-	dma_free_coherent(NULL, MAX_PKT_LEN, tx_vir_buffer0, tx_phy_buffer0);
+	unregister_chrdev_region(my_dev_id, 1);
+	dma_free_coherent(NULL, MAX_PKT_LEN, tx_vir_buffer, tx_phy_buffer);
 	printk(KERN_INFO "[fpm_exit] Exit module finished\"%s\".\n", DRIVER_NAME);
 }
 
@@ -419,7 +335,7 @@ static int fpm_probe(struct platform_device *pdev)  {
 			}
 			printk(KERN_INFO "[fpm_probe] dma1 base address start at %x\n", dma1_p->base_addr);
 			
-			dma1_p->irq_num = platform_get_irq(pdev, 1);
+			dma1_p->irq_num = platform_get_irq(pdev, 0);
 			if(!dma1_p->irq_num) {
 				printk(KERN_ERR "[fpm_probe] Could not get IRQ resource for dma1\n");
 				rc = -ENODEV;
@@ -482,7 +398,7 @@ static int fpm_probe(struct platform_device *pdev)  {
 			}
 			printk(KERN_INFO "[fpm_probe] dma2 base address start at %x\n", dma2_p->base_addr);
 			
-			dma2_p->irq_num = platform_get_irq(pdev, 2);
+			dma2_p->irq_num = platform_get_irq(pdev, 0);
 			if(!dma2_p->irq_num) {
 				printk(KERN_ERR "[fpm_probe] Could not get IRQ resource for dma2\n");
 				rc = -ENODEV;
@@ -600,19 +516,9 @@ static int fpm_mmap(struct file *f, struct vm_area_struct *vma_s) {
 		printk(KERN_ERR "[fpm_dma_mmap] Trying to mmap more space than it's allocated\n");
 	}
 
-	ret = dma_mmap_coherent(my_device_dma0, vma_s, tx_vir_buffer0, tx_phy_buffer0, length);
+	ret = dma_mmap_coherent(my_device, vma_s, tx_vir_buffer, tx_phy_buffer, length);
 	if(ret < 0) {
-		printk(KERN_ERR "[fpm_dma_mmap] Memory map DMA0 failed\n");
-		return ret;
-	}
-	ret = dma_mmap_coherent(my_device_dma1, vma_s, tx_vir_buffer1, tx_phy_buffer1, length);
-	if(ret < 0) {
-		printk(KERN_ERR "[fpm_dma_mmap] Memory map DMA1 failed\n");
-		return ret;
-	}
-	ret = dma_mmap_coherent(my_device_dma2, vma_s, tx_vir_buffer2, tx_phy_buffer2, length);
-	if(ret < 0) {
-		printk(KERN_ERR "[fpm_dma_mmap] Memory map DMA2 failed\n");
+		printk(KERN_ERR "[fpm_dma_mmap] Memory map DMA failed\n");
 		return ret;
 	}
 	return 0;
