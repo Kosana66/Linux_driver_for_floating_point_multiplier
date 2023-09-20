@@ -83,6 +83,9 @@ unsigned int dma_simple_write1(dma_addr_t TxBufferPtr, unsigned int pkt_len, voi
 unsigned int dma_simple_write2(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address); 
 unsigned int dma_simple_read(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address);
 
+float castBinToFloat(u32 binaryValue);
+uint32_t castFloatToBin(float floatNumber);
+
 /* -------------------------------------- */
 /* -----------GLOBAL VARIABLES----------- */
 /* -------------------------------------- */
@@ -179,16 +182,7 @@ static int __init fpm_init(void) {
 	}
 	printk(KERN_INFO "[fpm_init] Module init done\n");
 
-	/* Making sure that virtual addresses are mapped to physical addresses that are coherent */
-	ret = dma_set_coherent_mask(my_device, DMA_BIT_MASK(32));
-	if(ret < 0) {
-		printk(KERN_WARNING "[fpm_init] DMA coherent mask not set!\n");
-	}
-	else {
-		printk(KERN_INFO "[fpm_init] DMA coherent mask set\n");
-	}
-
-	tx_vir_buffer = dma_alloc_coherent(my_device, MAX_PKT_LEN, tx_phy_buffer, GFP_KERNEL);
+	tx_vir_buffer = dma_alloc_coherent(my_device, MAX_PKT_LEN, &tx_phy_buffer, GFP_KERNEL);
 	printk(KERN_INFO "[fpm_init] Virtual and physical addresses coherent starting at %x and ending at %x\n", tx_phy_buffer, tx_phy_buffer+(uint)(MAX_PKT_LEN));
 	if(!tx_vir_buffer) {
 		printk(KERN_ALERT "[fpm_init] Could not allocate dma_alloc_coherent");
@@ -197,7 +191,6 @@ static int __init fpm_init(void) {
 	else {
 		printk("[fpm_init] Successfully allocated memory for transaction buffer\n");
 	}
-	tx_vir_buffer = 0x00000000;
 	printk(KERN_INFO "[fpm_init] Memory reset.\n");
 	return platform_driver_register(&fpm_driver);
 	
@@ -214,14 +207,12 @@ static int __init fpm_init(void) {
 
 /* Exit function being called and executed only once by rmmod command. */
 static void __exit fpm_exit(void) {
-	tx_vir_buffer = 0x00000000;
 	/* Exit Device Module */
 	platform_driver_unregister(&fpm_driver);
 	cdev_del(my_cdev);
 	device_destroy(my_class, MKDEV(MAJOR(my_dev_id),0));
 	class_destroy(my_class);
 	unregister_chrdev_region(my_dev_id, 1);
-	dma_free_coherent(NULL, MAX_PKT_LEN, tx_vir_buffer, tx_phy_buffer);
 	printk(KERN_INFO "[fpm_exit] Exit module finished\"%s\".\n", DRIVER_NAME);
 }
 
@@ -494,14 +485,11 @@ int fpm_close(struct inode *pinode, struct file *pfile) {
 
 ssize_t fpm_read(struct file *pfile, char __user *buf, size_t length, loff_t *offset) {		
 	char buff[BUFF_SIZE];
-
-
-
-
-
-
-
-
+	u32 output;
+	float res;
+	dma_simple_read(tx_phy_buffer, output, dma2_p->base_addr);
+	res = castBinToFloat(output);
+	length = scnprintf(buff, BUFF_SIZE, "Res: %f\n", res);
 	ret = copy_to_user(buf, buff, length);
 	if(ret) {
 		printk(KERN_WARNING "[fpm_read] Copy to user failed\n");
@@ -515,8 +503,11 @@ ssize_t fpm_write(struct file *pfile, const char __user *buf, size_t length, lof
 	char buff[BUFF_SIZE];
 	char hexString1[10];
 	char hexString2[10];
-	u32 hexNum1;
-	u32 hexNum2;
+	char string1[300];
+	char string2[300];
+	double doubleNum1, doubleNum2;
+	float floatNum1, floatNum2;
+	u32 operand1, operand2;
 	int ret = 0;
 	ret = copy_from_user(buff, buf, length);  
     if (ret) {
@@ -524,25 +515,30 @@ ssize_t fpm_write(struct file *pfile, const char __user *buf, size_t length, lof
         return -EFAULT;
     }
 	buff[length] = '\0';
-	ret = sscanf(buff, "%10[^,], %10[^ ] ", &hexString1, &hexString2);
+	ret = sscanf(buff, "%300[^,], %300[^ ] ", &string1, &string2);
 	if(ret != 2){
 		printk(KERN_WARNING "[fpm_write] Parsing failed\n");
         return -EFAULT;
 	}
-	if(!(hexString1[0]=='0' && (hexString1[1]=='x' || hexString1[1]=='X'))) {
-		printk(KERN_WARNING "[fpm_write] Invalid conversion of first number.\n");
+	ret = kstrtod(string1, 0, &doubleNum1);
+	if(ret < 0) {
+		printk(KERN_WARNING "[fpm_write] Converting first operand in double failed\n");
         return -EFAULT;
 	}
-	ret = kstrtol(hexString1+2,16,&hexNum1);
+	floatNum1 = (float)doubleNum1;
+	operand1 = castFloatToBin(floatNum1);
 	transaction_over0 = 1;
-	dma_simple_write1(tx_phy_buffer, hexNum1, dma0_p->base_addr);
-	if(!(hexString2[0]=='0' && (hexString2[1]=='x' || hexString2[1]=='X'))) {
-		printk(KERN_WARNING "[fpm_write] Invalid conversion of second number.\n");
+	dma_simple_write1(tx_phy_buffer, operand1, dma0_p->base_addr);
+
+	ret = kstrtod(string2, 0, &doubleNum2);
+	if(ret < 0) {
+		printk(KERN_WARNING "[fpm_write] Converting second operand in double failed\n");
         return -EFAULT;
 	}
-	ret = kstrtol(hexString2+2,16,&hexNum2);
+	floatNum2 = (float)doubleNum2;
+	operand2 = castFloatToBin(floatNum2);
 	transaction_over1 = 1;
-	dma_simple_write2(tx_phy_buffer, hexNum2, dma0_p->base_addr);
+	dma_simple_write2(tx_phy_buffer, operand2, dma1_p->base_addr);
 	printk(KERN_INFO "[fpm_write] Succesfully wrote in driver\n");
 	return 0;
 }
@@ -645,4 +641,43 @@ static irqreturn_t dma2_S2MM_isr(int irq, void* dev_id){
 	transaction_over2 = 0;
 	printk(KERN_INFO "[dma2_isr] Finished DMA2 S2MM transaction!\n");
 	return IRQ_HANDLED;
+}
+float castBinToFloat(u32 binaryValue) {
+	u32 binaryValue_uint = binaryValue;
+	int sign = (binaryValue_uint >> 31) & 0x1;
+	if (sign == 1) {
+		binaryValue_uint = (~binaryValue_uint) + 1; 
+	}
+	int integerPart = (binaryValue_uint >> 24) & 0x7F;
+	int decimalPart = binaryValue_uint & 0xFFFFFF;
+
+	float floatValue = (float)integerPart + ((float)decimalPart / 16777216);
+	if (sign == 1) {
+		floatValue = floatValue * (-1);
+	}
+	return floatValue;
+}
+
+u32 castFloatToBin(float floatNumber) 
+{
+    int sign = (floatNumber >= 0) ? 0 : 1;
+    float resolution = 0.0000000596046448;
+    float half_of_resolution = 0.0000000298023224;
+    int tmp;
+    u32 binaryValue;
+    if (sign == 0) {
+        tmp = floatNumber / resolution;
+        if (floatNumber >= tmp * resolution + half_of_resolution) {
+			tmp++;
+		};
+		binaryValue = tmp;
+    }
+    else {
+        tmp = floatNumber / resolution * (-1);
+        if (floatNumber <= (-1) * tmp * resolution - half_of_resolution) {
+			tmp++;
+		}
+		binaryValue = 4294967296 - tmp;
+    }
+    return binaryValue;
 }
