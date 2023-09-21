@@ -18,7 +18,6 @@
 #include <linux/ioport.h>
 #include <linux/interrupt.h>
 #include <linux/of.h>
-
 #include <linux/dma-mapping.h>  
 #include <linux/mm.h>
 
@@ -27,7 +26,7 @@ MODULE_DESCRIPTION("FPM IP core driver");
 MODULE_LICENSE("Dual BSD/GPL");
 
 #define DRIVER_NAME "fpm_driver" 
-#define BUFF_SIZE 20
+#define BUFF_SIZE 200
 
 /* -------------------------------------- */
 /* --------FPM IP RELATED MACROS--------- */
@@ -78,13 +77,12 @@ static irqreturn_t dma0_MM2S_isr(int irq, void* dev_id);
 static irqreturn_t dma1_MM2S_isr(int irq, void* dev_id);
 static irqreturn_t dma2_S2MM_isr(int irq, void* dev_id);
 
-int dma_init(void __iomem *base_address);
+int dma_init0(void __iomem *base_address);
+int dma_init1(void __iomem *base_address);
+int dma_init2(void __iomem *base_address);
 unsigned int dma_simple_write1(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address); 
 unsigned int dma_simple_write2(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address); 
 unsigned int dma_simple_read(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address);
-
-float castBinToFloat(u32 binaryValue);
-uint32_t castFloatToBin(float floatNumber);
 
 /* -------------------------------------- */
 /* -----------GLOBAL VARIABLES----------- */
@@ -182,8 +180,9 @@ static int __init fpm_init(void) {
 	}
 	printk(KERN_INFO "[fpm_init] Module init done\n");
 
-	tx_vir_buffer = dma_alloc_coherent(my_device, MAX_PKT_LEN, &tx_phy_buffer, GFP_KERNEL);
-	printk(KERN_INFO "[fpm_init] Virtual and physical addresses coherent starting at %x and ending at %x\n", tx_phy_buffer, tx_phy_buffer+(uint)(MAX_PKT_LEN));
+	tx_vir_buffer = (u32)dma_alloc_coherent(my_device, MAX_PKT_LEN, &tx_phy_buffer, GFP_KERNEL);
+	printk(KERN_INFO "[fpm_init] tx_vir_buffer at %#x\n", tx_vir_buffer);
+	printk(KERN_INFO "[fpm_init] Virtual and physical addresses coherent starting at %#x and ending at %#x\n", tx_phy_buffer, tx_phy_buffer+(uint)(MAX_PKT_LEN));
 	if(!tx_vir_buffer) {
 		printk(KERN_ALERT "[fpm_init] Could not allocate dma_alloc_coherent");
 		goto fail_3;
@@ -261,7 +260,7 @@ static int fpm_probe(struct platform_device *pdev)  {
 				rc = -EIO;
 				goto error02;
 			}
-			printk(KERN_INFO "[fpm_probe] dma0 base address start at %x\n", dma0_p->base_addr);
+			printk(KERN_INFO "[fpm_probe] dma0 base address start at %#x\n", (u32)dma0_p->base_addr);
 			
 			dma0_p->irq_num = platform_get_irq(pdev, 0);
 			if(!dma0_p->irq_num) {
@@ -280,7 +279,7 @@ static int fpm_probe(struct platform_device *pdev)  {
 			enable_irq(dma0_p->irq_num);
 			
 			/* INIT DMA */
-			dma_init(dma0_p->base_addr);
+			dma_init0(dma0_p->base_addr);
 			printk(KERN_NOTICE "[fpm_probe] fpm platform driver registered - dma0\n");
 			device_fsm++;
 			return 0;
@@ -324,7 +323,7 @@ static int fpm_probe(struct platform_device *pdev)  {
 				rc = -EIO;
 				goto error12;
 			}
-			printk(KERN_INFO "[fpm_probe] dma1 base address start at %x\n", dma1_p->base_addr);
+			printk(KERN_INFO "[fpm_probe] dma1 base address start at %#x\n", (u32)dma1_p->base_addr);
 			
 			dma1_p->irq_num = platform_get_irq(pdev, 0);
 			if(!dma1_p->irq_num) {
@@ -343,7 +342,7 @@ static int fpm_probe(struct platform_device *pdev)  {
 			enable_irq(dma1_p->irq_num);
 			
 			/* INIT DMA */
-			dma_init(dma1_p->base_addr);
+			dma_init1(dma1_p->base_addr);
 			printk(KERN_NOTICE "[fpm_probe] fpm platform driver registered - dma1\n");
 			device_fsm++;
 			return 0;
@@ -387,7 +386,7 @@ static int fpm_probe(struct platform_device *pdev)  {
 				rc = -EIO;
 				goto error22;
 			}
-			printk(KERN_INFO "[fpm_probe] dma2 base address start at %x\n", dma2_p->base_addr);
+			printk(KERN_INFO "[fpm_probe] dma2 base address start at %#x\n",(u32) dma2_p->base_addr);
 			
 			dma2_p->irq_num = platform_get_irq(pdev, 0);
 			if(!dma2_p->irq_num) {
@@ -406,7 +405,7 @@ static int fpm_probe(struct platform_device *pdev)  {
 			enable_irq(dma2_p->irq_num);
 			
 			/* INIT DMA */
-			dma_init(dma2_p->base_addr);		
+			dma_init2(dma2_p->base_addr);		
 			printk(KERN_NOTICE "[fpm_probe] fpm platform driver registered - dma2\n");	
 			return 0;
 			
@@ -485,11 +484,11 @@ int fpm_close(struct inode *pinode, struct file *pfile) {
 
 ssize_t fpm_read(struct file *pfile, char __user *buf, size_t length, loff_t *offset) {		
 	char buff[BUFF_SIZE];
-	u32 output;
-	float res;
+	u32 output = 0;
+	int ret = 0;
 	dma_simple_read(tx_phy_buffer, output, dma2_p->base_addr);
-	res = castBinToFloat(output);
-	length = scnprintf(buff, BUFF_SIZE, "Res: %f\n", res);
+	printk(KERN_WARNING "[fpm_read] Result: %#x\n", output);
+	length = scnprintf(buff, BUFF_SIZE, "%u", output);
 	ret = copy_to_user(buf, buff, length);
 	if(ret) {
 		printk(KERN_WARNING "[fpm_read] Copy to user failed\n");
@@ -501,46 +500,43 @@ ssize_t fpm_read(struct file *pfile, char __user *buf, size_t length, loff_t *of
 
 ssize_t fpm_write(struct file *pfile, const char __user *buf, size_t length, loff_t *offset) {
 	char buff[BUFF_SIZE];
-	char hexString1[10];
-	char hexString2[10];
-	char string1[300];
-	char string2[300];
-	double doubleNum1, doubleNum2;
-	float floatNum1, floatNum2;
+	char str1[50];
+	char str2[50];
+	int ret;
+	long int tmp1, tmp2;
 	u32 operand1, operand2;
-	int ret = 0;
-	ret = copy_from_user(buff, buf, length);  
-    if (ret) {
-        printk(KERN_WARNING "[fpm_write] Copy from user failed\n");
-        return -EFAULT;
-    }
+	ret = copy_from_user(buff, buf, length);
+    	if (ret) {
+       		 printk(KERN_WARNING "[fpm_write] Copy from user failed\n");
+       		 return -EFAULT;
+   	}
 	buff[length] = '\0';
-	ret = sscanf(buff, "%300[^,], %300[^ ] ", &string1, &string2);
+	ret = sscanf(buff, "%50[^,], %50[^ ] ", str1, str2);
 	if(ret != 2){
 		printk(KERN_WARNING "[fpm_write] Parsing failed\n");
-        return -EFAULT;
+        	return -EFAULT;
 	}
-	ret = kstrtod(string1, 0, &doubleNum1);
-	if(ret < 0) {
-		printk(KERN_WARNING "[fpm_write] Converting first operand in double failed\n");
-        return -EFAULT;
+	if(str1[0] == '0' && str1[1] == 'x') {
+		ret = kstrtol(str1 + 2, 16, &tmp1);
+		operand1 = (u32)tmp1;
+		printk(KERN_WARNING "[fpm_write] Operand1: %#x\n", operand1);
+
 	}
-	floatNum1 = (float)doubleNum1;
-	operand1 = castFloatToBin(floatNum1);
+	if(str2[0] == '0' && str2[1] == 'x') {
+		ret = kstrtol(str2 + 2, 16, &tmp2);
+		operand2 = (u32)tmp2;
+		printk(KERN_WARNING "[fpm_write] Operand2: %#x\n", operand2);
+	}
+
 	transaction_over0 = 1;
 	dma_simple_write1(tx_phy_buffer, operand1, dma0_p->base_addr);
 
-	ret = kstrtod(string2, 0, &doubleNum2);
-	if(ret < 0) {
-		printk(KERN_WARNING "[fpm_write] Converting second operand in double failed\n");
-        return -EFAULT;
-	}
-	floatNum2 = (float)doubleNum2;
-	operand2 = castFloatToBin(floatNum2);
+
 	transaction_over1 = 1;
 	dma_simple_write2(tx_phy_buffer, operand2, dma1_p->base_addr);
+
 	printk(KERN_INFO "[fpm_write] Succesfully wrote in driver\n");
-	return 0;
+	return length;
 }
 
 /* -------------------------------------- */
@@ -557,7 +553,7 @@ static int fpm_mmap(struct file *f, struct vm_area_struct *vma_s) {
 		printk(KERN_ERR "[fpm_dma_mmap] Trying to mmap more space than it's allocated\n");
 	}
 
-	ret = dma_mmap_coherent(my_device, vma_s, tx_vir_buffer, tx_phy_buffer, length);
+	ret = dma_mmap_coherent(my_device, vma_s, (void *)tx_vir_buffer, tx_phy_buffer, length);
 	if(ret < 0) {
 		printk(KERN_ERR "[fpm_dma_mmap] Memory map DMA failed\n");
 		return ret;
@@ -569,38 +565,97 @@ static int fpm_mmap(struct file *f, struct vm_area_struct *vma_s) {
 /* ------------DMA FUNCTIONS------------- */
 /* -------------------------------------- */
 
-int dma_init(void __iomem *base_address) {
-	iowrite32(DMACR_RESET | IOC_IRQ_EN | ERR_IRQ_EN;, base_address + MM2S_DMACR_REG);
-	iowrite32(DMACR_RESET | IOC_IRQ_EN | ERR_IRQ_EN, base_address + S2MM_DMACR_REG);
-	printk(KERN_INFO "[dma_init] Successfully initialized DMA \n");
+int dma_init0(void __iomem *base_address) {
+	u32 MM2S_DMACR_val = 0;
+	u32 enInterrupt = 0;
+
+	iowrite32(DMACR_RESET, base_address + MM2S_DMACR_REG);
+	MM2S_DMACR_val = ioread32(base_address + MM2S_DMACR_REG);
+
+	enInterrupt = MM2S_DMACR_val | IOC_IRQ_EN | ERR_IRQ_EN;
+	iowrite32(enInterrupt, base_address + MM2S_DMACR_REG);	
+
+	printk(KERN_INFO "[dma0_init] Successfully initialized DMA0 \n");
+	return 0;
+}
+int dma_init1(void __iomem *base_address) {
+	u32 MM2S_DMACR_val = 0;
+	u32 enInterrupt = 0;
+
+	iowrite32(DMACR_RESET, base_address + MM2S_DMACR_REG);
+	MM2S_DMACR_val = ioread32(base_address + MM2S_DMACR_REG);
+
+	enInterrupt = MM2S_DMACR_val | IOC_IRQ_EN | ERR_IRQ_EN;
+	iowrite32(enInterrupt, base_address + MM2S_DMACR_REG);	
+
+	printk(KERN_INFO "[dma1_init] Successfully initialized DMA1 \n");
+	return 0;
+}
+int dma_init2(void __iomem *base_address) {
+	u32 S2MM_DMACR_val = 0;
+	u32 enInterrupt = 0;
+
+	iowrite32(DMACR_RESET, base_address + S2MM_DMACR_REG);
+	S2MM_DMACR_val = ioread32(base_address + S2MM_DMACR_REG);
+
+	enInterrupt = S2MM_DMACR_val | IOC_IRQ_EN | ERR_IRQ_EN;
+	iowrite32(enInterrupt, base_address + S2MM_DMACR_REG);	
+
+	printk(KERN_INFO "[dma2_init] Successfully initialized DMA2 \n");
 	return 0;
 }
 
+
 unsigned int dma_simple_write1(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address) {
-	u32 MM2S_DMACR_value;
-	MM2S_DMACR_value = ioread32(base_address + MM2S_DMACR_REG);
-	iowrite32(MM2S_DMACR_value | DMACR_RUN_STOP, base_address + MM2S_DMACR_REG);
+	u32 MM2S_DMACR_val = 0;
+	u32 enInterrupt = 0;
+
+	MM2S_DMACR_val = ioread32(base_address + MM2S_DMACR_REG);
+
+	enInterrupt = MM2S_DMACR_val | IOC_IRQ_EN | ERR_IRQ_EN;
+	iowrite32(enInterrupt, base_address + MM2S_DMACR_REG);
+	
+	MM2S_DMACR_val = ioread32(base_address + MM2S_DMACR_REG);
+	MM2S_DMACR_val |= DMACR_RUN_STOP;
+	iowrite32(MM2S_DMACR_val, base_address + MM2S_DMACR_REG);
+
 	iowrite32((u32)TxBufferPtr, base_address + MM2S_SA_REG);
 	iowrite32(pkt_len, base_address + MM2S_LENGTH_REG);
+	
 	printk(KERN_INFO "[dma_simple_write1] Successfully wrote DMA1 \n");
 	return 0;
 	
 }
 unsigned int dma_simple_write2(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address) {
-	u32 MM2S_DMACR_value;
-	MM2S_DMACR_value = ioread32(base_address + MM2S_DMACR_REG);
-	iowrite32(MM2S_DMACR_value | DMACR_RUN_STOP, base_address + MM2S_DMACR_REG);
+	u32 MM2S_DMACR_val = 0;
+	u32 enInterrupt = 0;
+
+	MM2S_DMACR_val = ioread32(base_address + MM2S_DMACR_REG);
+
+	enInterrupt = MM2S_DMACR_val | IOC_IRQ_EN | ERR_IRQ_EN;
+	iowrite32(enInterrupt, base_address + MM2S_DMACR_REG);
+	
+	MM2S_DMACR_val = ioread32(base_address + MM2S_DMACR_REG);
+	MM2S_DMACR_val |= DMACR_RUN_STOP;
+	iowrite32(MM2S_DMACR_val, base_address + MM2S_DMACR_REG);
+
 	iowrite32((u32)TxBufferPtr, base_address + MM2S_SA_REG);
-	iowrite32(pkt_len, base_address + MM2S_LENGTH_REG);
+	iowrite32(pkt_len, base_address + MM2S_LENGTH_REG);	
+	
 	printk(KERN_INFO "[dma_simple_write2] Successfully wrote DMA2 \n");
 	return 0;
 }
 unsigned int dma_simple_read(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address) {
 	u32 S2MM_DMACR_value;
+
 	S2MM_DMACR_value = ioread32(base_address + S2MM_DMACR_REG);
-	iowrite32(S2MM_DMACR_value | DMACR_RUN_STOP, base_address + S2MM_DMACR_REG);
+	
+	S2MM_DMACR_value |= DMACR_RUN_STOP; 
+	iowrite32(S2MM_DMACR_value, base_address + S2MM_DMACR_REG);
+	
 	iowrite32((u32)TxBufferPtr, base_address + S2MM_DA_REG);
 	iowrite32(pkt_len, base_address + S2MM_LENGTH_REG);
+	
 	printk(KERN_INFO "[dma_simple_read] Successfully read DMA \n");
 	return 0;
 }
@@ -642,42 +697,5 @@ static irqreturn_t dma2_S2MM_isr(int irq, void* dev_id){
 	printk(KERN_INFO "[dma2_isr] Finished DMA2 S2MM transaction!\n");
 	return IRQ_HANDLED;
 }
-float castBinToFloat(u32 binaryValue) {
-	u32 binaryValue_uint = binaryValue;
-	int sign = (binaryValue_uint >> 31) & 0x1;
-	if (sign == 1) {
-		binaryValue_uint = (~binaryValue_uint) + 1; 
-	}
-	int integerPart = (binaryValue_uint >> 24) & 0x7F;
-	int decimalPart = binaryValue_uint & 0xFFFFFF;
 
-	float floatValue = (float)integerPart + ((float)decimalPart / 16777216);
-	if (sign == 1) {
-		floatValue = floatValue * (-1);
-	}
-	return floatValue;
-}
-
-u32 castFloatToBin(float floatNumber) 
-{
-    int sign = (floatNumber >= 0) ? 0 : 1;
-    float resolution = 0.0000000596046448;
-    float half_of_resolution = 0.0000000298023224;
-    int tmp;
-    u32 binaryValue;
-    if (sign == 0) {
-        tmp = floatNumber / resolution;
-        if (floatNumber >= tmp * resolution + half_of_resolution) {
-			tmp++;
-		};
-		binaryValue = tmp;
-    }
-    else {
-        tmp = floatNumber / resolution * (-1);
-        if (floatNumber <= (-1) * tmp * resolution - half_of_resolution) {
-			tmp++;
-		}
-		binaryValue = 4294967296 - tmp;
-    }
-    return binaryValue;
-}
+/* Kernel headers */
