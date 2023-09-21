@@ -52,7 +52,7 @@ MODULE_LICENSE("Dual BSD/GPL");
 #define S2MM_LENGTH_REG			0x58
 #define S2MM_STATUS_REG			0x34
 
-#define DMACR_RUN_STOP				1<<1
+#define DMACR_RUN_STOP				1
 #define DMACR_RESET				1<<2
 #define IOC_IRQ_EN				1<<12
 #define ERR_IRQ_EN				1<<14
@@ -132,7 +132,7 @@ static struct platform_driver fpm_driver = {
 };
 
 dma_addr_t tx_phy_buffer;
-u32 tx_vir_buffer;
+u32 *tx_vir_buffer;
 int device_fsm = 0;
 int transaction_over0 = 0;
 int transaction_over1 = 0;
@@ -142,34 +142,26 @@ int transaction_over2 = 0;
 /* -------INIT AND EXIT FUNCTIONS-------- */
 /* -------------------------------------- */
 
-/* Init function being called and executed only once by insmod command. */
 static int __init fpm_init(void) {
 	int ret = 0;
 	printk(KERN_INFO "[fpm_init] Initialize Module \"%s\"\n", DRIVER_NAME);
-
-	/* Dynamically allocate MAJOR and MINOR numbers. */
 	ret = alloc_chrdev_region(&my_dev_id, 0, 1, "fpm_region");
 	if(ret) {
 		printk(KERN_ALERT "[fpm_init] Failed CHRDEV!\n");
 		return -1;
 	}
 	printk(KERN_INFO "[fpm_init] Successful CHRDEV!\n");
-
-	/* Creating NODE file */
-	/* Firstly, class_create is used to create class to be used as a parametar going forward. */
 	my_class = class_create(THIS_MODULE, "fpm_class");
 	if(my_class == NULL) {
 		printk(KERN_ALERT "[fpm_init] Failed class create!\n");
 		goto fail_0;
 	}
 	printk(KERN_INFO "[fpm_init] Successful class chardev create!\n");
-	/* Secondly, device_create is used to create devices in a region. */
 	my_device = device_create(my_class, NULL, MKDEV(MAJOR(my_dev_id), 0), NULL, "fpmult");
 	if(my_device == NULL) {
 		goto fail_1;
 	}
 	printk(KERN_INFO "[fpm_init] Device fpmult created\n");
-
 	my_cdev = cdev_alloc();	
 	my_cdev->ops = &my_fops;
 	my_cdev->owner = THIS_MODULE;
@@ -179,9 +171,7 @@ static int __init fpm_init(void) {
 		goto fail_2;
 	}
 	printk(KERN_INFO "[fpm_init] Module init done\n");
-
-	tx_vir_buffer = (u32)dma_alloc_coherent(my_device, MAX_PKT_LEN, &tx_phy_buffer, GFP_KERNEL);
-	printk(KERN_INFO "[fpm_init] tx_vir_buffer at %#x\n", tx_vir_buffer);
+	tx_vir_buffer = dma_alloc_coherent(my_device, MAX_PKT_LEN, &tx_phy_buffer, GFP_DMA | GFP_KERNEL);
 	printk(KERN_INFO "[fpm_init] Virtual and physical addresses coherent starting at %#x and ending at %#x\n", tx_phy_buffer, tx_phy_buffer+(uint)(MAX_PKT_LEN));
 	if(!tx_vir_buffer) {
 		printk(KERN_ALERT "[fpm_init] Could not allocate dma_alloc_coherent");
@@ -190,9 +180,9 @@ static int __init fpm_init(void) {
 	else {
 		printk("[fpm_init] Successfully allocated memory for transaction buffer\n");
 	}
+	*tx_vir_buffer = 0;
 	printk(KERN_INFO "[fpm_init] Memory reset.\n");
 	return platform_driver_register(&fpm_driver);
-	
 	fail_3:
 		cdev_del(my_cdev);
 	fail_2:
@@ -204,7 +194,6 @@ static int __init fpm_init(void) {
 	return -1;
 } 
 
-/* Exit function being called and executed only once by rmmod command. */
 static void __exit fpm_exit(void) {
 	/* Exit Device Module */
 	platform_driver_unregister(&fpm_driver);
@@ -222,38 +211,29 @@ module_exit(fpm_exit);
 /* -----PROBE AND REMOVE FUNCTIONS------- */
 /* -------------------------------------- */
 
-/* Probe function attempts to find and match a device connected to system with a driver that exists in a system */
-/* If successful, memory space will be allocated for a device */
 static int fpm_probe(struct platform_device *pdev)  {
 	struct resource *r_mem;
 	int rc = 0;
-
 	switch(device_fsm){
 		case 0:
-			/* Get physical register address space from device tree */
 			r_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 			if(!r_mem){
 				printk(KERN_ALERT "[fpm_probe] Failed to get reg resource.\n");
 				return -ENODEV;
 			}
 			printk(KERN_ALERT "[fpm_probe] Probing dma0_p\n");
-			
-			/* Allocate memory space for structure fpm_info */ 
 			dma0_p = (struct fpm_info *) kmalloc(sizeof(struct fpm_info), GFP_KERNEL);
 			if(!dma0_p) {
 				printk(KERN_ALERT "[fpm_probe] Could not allocate dma0 device\n");
 				return -ENOMEM;
 			}
-			/* Put phisical addresses in fpm_info structure */
 			dma0_p->mem_start = r_mem->start;
 			dma0_p->mem_end = r_mem->end;
-			/* Reserve that memory space for this driver */
 			if(!request_mem_region(dma0_p->mem_start, dma0_p->mem_end - dma0_p->mem_start + 1,	"dma0_device")) {
 				printk(KERN_ALERT "[fpm_probe] Could not lock memory region at %p\n",(void *)dma0_p->mem_start);
 				rc = -EBUSY;
 				goto error01;
 			}
-			/* Remap physical addresses to virtual addresses */
 			dma0_p->base_addr = ioremap(dma0_p->mem_start, dma0_p->mem_end - dma0_p->mem_start + 1);
 			if (!dma0_p->base_addr) {
 				printk(KERN_ALERT "[fpm_probe] Could not allocate memory\n");
@@ -261,7 +241,6 @@ static int fpm_probe(struct platform_device *pdev)  {
 				goto error02;
 			}
 			printk(KERN_INFO "[fpm_probe] dma0 base address start at %#x\n", (u32)dma0_p->base_addr);
-			
 			dma0_p->irq_num = platform_get_irq(pdev, 0);
 			if(!dma0_p->irq_num) {
 				printk(KERN_ERR "[fpm_probe] Could not get IRQ resource for dma0\n");
@@ -277,13 +256,10 @@ static int fpm_probe(struct platform_device *pdev)  {
 				printk(KERN_INFO "[fpm_probe] Registered IRQ %d\n", dma0_p->irq_num);
 			}
 			enable_irq(dma0_p->irq_num);
-			
-			/* INIT DMA */
 			dma_init0(dma0_p->base_addr);
 			printk(KERN_NOTICE "[fpm_probe] fpm platform driver registered - dma0\n");
 			device_fsm++;
 			return 0;
-
 			error03:
 				iounmap(dma0_p->base_addr);
 			error02:
@@ -293,30 +269,24 @@ static int fpm_probe(struct platform_device *pdev)  {
 				return rc;	
 		break;
 		case 1:
-			/* Get physical register address space from device tree */
 			r_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 			if(!r_mem){
 				printk(KERN_ALERT "[fpm_probe] Failed to get reg resource.\n");
 				return -ENODEV;
 			}
 			printk(KERN_ALERT "[fpm_probe] Probing dma1_p\n");
-			
-			/* Allocate memory space for structure fpm_info */ 
 			dma1_p = (struct fpm_info *) kmalloc(sizeof(struct fpm_info), GFP_KERNEL);
 			if(!dma1_p) {
 				printk(KERN_ALERT "[fpm_probe] Could not allocate dma1 device\n");
 				return -ENOMEM;
 			}
-			/* Put phisical addresses in fpm_info structure */
 			dma1_p->mem_start = r_mem->start;
 			dma1_p->mem_end = r_mem->end;
-			/* Reserve that memory space for this driver */
 			if(!request_mem_region(dma1_p->mem_start, dma1_p->mem_end - dma1_p->mem_start + 1,	"dma1_device")) {
 				printk(KERN_ALERT "[fpm_probe] Could not lock memory region at %p\n",(void *)dma1_p->mem_start);
 				rc = -EBUSY;
 				goto error11;
 			}
-			/* Remap physical addresses to virtual addresses */
 			dma1_p->base_addr = ioremap(dma1_p->mem_start, dma1_p->mem_end - dma1_p->mem_start + 1);
 			if (!dma1_p->base_addr) {
 				printk(KERN_ALERT "[fpm_probe] Could not allocate memory\n");
@@ -324,7 +294,6 @@ static int fpm_probe(struct platform_device *pdev)  {
 				goto error12;
 			}
 			printk(KERN_INFO "[fpm_probe] dma1 base address start at %#x\n", (u32)dma1_p->base_addr);
-			
 			dma1_p->irq_num = platform_get_irq(pdev, 0);
 			if(!dma1_p->irq_num) {
 				printk(KERN_ERR "[fpm_probe] Could not get IRQ resource for dma1\n");
@@ -340,13 +309,10 @@ static int fpm_probe(struct platform_device *pdev)  {
 				printk(KERN_INFO "[fpm_probe] Registered IRQ %d\n", dma1_p->irq_num);
 			}
 			enable_irq(dma1_p->irq_num);
-			
-			/* INIT DMA */
 			dma_init1(dma1_p->base_addr);
 			printk(KERN_NOTICE "[fpm_probe] fpm platform driver registered - dma1\n");
 			device_fsm++;
 			return 0;
-			
 			error13:
 				iounmap(dma1_p->base_addr);
 			error12:
@@ -356,30 +322,24 @@ static int fpm_probe(struct platform_device *pdev)  {
 				return rc;	
 		break;
 		case 2:			
-			/* Get physical register address space from device tree */
 			r_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 			if(!r_mem){
 				printk(KERN_ALERT "[fpm_probe] Failed to get reg resource.\n");
 				return -ENODEV;
 			}
 			printk(KERN_ALERT "[fpm_probe] Probing dma2_p\n");
-
-			/* Allocate memory space for structure fpm_info */ 
 			dma2_p = (struct fpm_info *) kmalloc(sizeof(struct fpm_info), GFP_KERNEL);
 			if(!dma2_p) {
 				printk(KERN_ALERT "[fpm_probe] Could not allocate dma2 device\n");
 				return -ENOMEM;
 			}
-			/* Put phisical addresses in fpm_info structure */
 			dma2_p->mem_start = r_mem->start;
 			dma2_p->mem_end = r_mem->end;
-			/* Reserve that memory space for this driver */
 			if(!request_mem_region(dma2_p->mem_start, dma2_p->mem_end - dma2_p->mem_start + 1,	"dma2_device")) {
 				printk(KERN_ALERT "[fpm_probe] Could not lock memory region at %p\n",(void *)dma2_p->mem_start);
 				rc = -EBUSY;
 				goto error21;
 			}
-			/* Remap physical addresses to virtual addresses */
 			dma2_p->base_addr = ioremap(dma2_p->mem_start, dma2_p->mem_end - dma2_p->mem_start + 1);
 			if (!dma2_p->base_addr) {
 				printk(KERN_ALERT "[fpm_probe] Could not allocate memory\n");
@@ -403,12 +363,9 @@ static int fpm_probe(struct platform_device *pdev)  {
 				printk(KERN_INFO "[fpm_probe] Registered IRQ %d\n", dma2_p->irq_num);
 			}
 			enable_irq(dma2_p->irq_num);
-			
-			/* INIT DMA */
 			dma_init2(dma2_p->base_addr);		
 			printk(KERN_NOTICE "[fpm_probe] fpm platform driver registered - dma2\n");	
 			return 0;
-			
 			error23:
 				iounmap(dma2_p->base_addr);
 			error22:
@@ -416,7 +373,6 @@ static int fpm_probe(struct platform_device *pdev)  {
 				kfree(dma2_p);
 			error21:
 				return rc;	
-		
 		break;
 		default:
 			printk(KERN_NOTICE "[fpm_probe] Devices weren't be detected\n");
@@ -485,8 +441,9 @@ int fpm_close(struct inode *pinode, struct file *pfile) {
 ssize_t fpm_read(struct file *pfile, char __user *buf, size_t length, loff_t *offset) {		
 	char buff[BUFF_SIZE];
 	u32 output = 0;
-	int ret = 0;
-	dma_simple_read(tx_phy_buffer, output, dma2_p->base_addr);
+	int ret = 0; 
+	dma_simple_read(tx_phy_buffer, MAX_PKT_LEN, dma2_p->base_addr);
+	output = *tx_vir_buffer;
 	printk(KERN_WARNING "[fpm_read] Result: %#x\n", output);
 	length = scnprintf(buff, BUFF_SIZE, "%u", output);
 	ret = copy_to_user(buf, buff, length);
@@ -499,21 +456,74 @@ ssize_t fpm_read(struct file *pfile, char __user *buf, size_t length, loff_t *of
 }
 
 ssize_t fpm_write(struct file *pfile, const char __user *buf, size_t length, loff_t *offset) {
+/*	char buff[BUFF_SIZE];
+	int ret = 0;
+	int ceoDeo1, ceoDeo2, razlomljeniDeo1, razlomljeniDeo2;
+	u32 sign, exp, mantissa;
+	exp = 0;
+	ret = copy_from_user(buff, buf, length);
+    	if (ret) {
+       		 printk(KERN_WARNING "[fpm_write] copy from user failed\n");
+       		 return -EFAULT;
+   	}
+	buff[length] = '\0'; 
+	ret = sscanf(buff, "%d.%d, %d.%d ", &ceoDeo1, &ceoDeo2, &razlomljeniDeo1, &razlomljeniDeo2);
+	if(ret != 4)r
+		printk(kERN_WARNING "[fpm_write] parsing failed\n");
+        	return -EFAULT;
+	i}
+	sign = (ceoDeo1 < 0) ? 1 : 0;
+	while(ceoDeo1 >= 2) {
+		ceoDeo1 /= 2;
+		exp++;
+	}	
+	exp += 127;
+	  */
+	
+
+
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
 	char buff[BUFF_SIZE];
+	int ret;
 	char str1[50];
 	char str2[50];
-	int ret;
 	long int tmp1, tmp2;
 	u32 operand1, operand2;
 	ret = copy_from_user(buff, buf, length);
     	if (ret) {
-       		 printk(KERN_WARNING "[fpm_write] Copy from user failed\n");
+       		 printk(KERN_WARNING "[fpm_write] copy from user failed\n");
        		 return -EFAULT;
    	}
 	buff[length] = '\0';
 	ret = sscanf(buff, "%50[^,], %50[^ ] ", str1, str2);
 	if(ret != 2){
-		printk(KERN_WARNING "[fpm_write] Parsing failed\n");
+		printk(KERN_WARNING "[fpm_write] parsing failed\n");
         	return -EFAULT;
 	}
 	if(str1[0] == '0' && str1[1] == 'x') {
@@ -527,14 +537,14 @@ ssize_t fpm_write(struct file *pfile, const char __user *buf, size_t length, lof
 		operand2 = (u32)tmp2;
 		printk(KERN_WARNING "[fpm_write] Operand2: %#x\n", operand2);
 	}
-
+	*tx_vir_buffer = operand1;
 	transaction_over0 = 1;
-	dma_simple_write1(tx_phy_buffer, operand1, dma0_p->base_addr);
-
-
+	dma_simple_write1(tx_phy_buffer, MAX_PKT_LEN, dma0_p->base_addr);
+	*tx_vir_buffer = operand2;
 	transaction_over1 = 1;
-	dma_simple_write2(tx_phy_buffer, operand2, dma1_p->base_addr);
-
+	dma_simple_write2(tx_phy_buffer, MAX_PKT_LEN, dma1_p->base_addr);
+	
+	
 	printk(KERN_INFO "[fpm_write] Succesfully wrote in driver\n");
 	return length;
 }
@@ -547,12 +557,10 @@ static int fpm_mmap(struct file *f, struct vm_area_struct *vma_s) {
 	int ret = 0;
 	long length = vma_s->vm_end - vma_s->vm_start;
 	printk(KERN_INFO "[fpm_dma_mmap] DMA TX Buffer is being memory mapped\n");
-
 	if(length > MAX_PKT_LEN) {
 		return -EIO;
 		printk(KERN_ERR "[fpm_dma_mmap] Trying to mmap more space than it's allocated\n");
 	}
-
 	ret = dma_mmap_coherent(my_device, vma_s, (void *)tx_vir_buffer, tx_phy_buffer, length);
 	if(ret < 0) {
 		printk(KERN_ERR "[fpm_dma_mmap] Memory map DMA failed\n");
@@ -568,39 +576,33 @@ static int fpm_mmap(struct file *f, struct vm_area_struct *vma_s) {
 int dma_init0(void __iomem *base_address) {
 	u32 MM2S_DMACR_val = 0;
 	u32 enInterrupt = 0;
-
+	iowrite32(0x0, base_address + MM2S_DMACR_REG);
 	iowrite32(DMACR_RESET, base_address + MM2S_DMACR_REG);
 	MM2S_DMACR_val = ioread32(base_address + MM2S_DMACR_REG);
-
 	enInterrupt = MM2S_DMACR_val | IOC_IRQ_EN | ERR_IRQ_EN;
 	iowrite32(enInterrupt, base_address + MM2S_DMACR_REG);	
-
 	printk(KERN_INFO "[dma0_init] Successfully initialized DMA0 \n");
 	return 0;
 }
 int dma_init1(void __iomem *base_address) {
 	u32 MM2S_DMACR_val = 0;
 	u32 enInterrupt = 0;
-
+	iowrite32(0x0, base_address + MM2S_DMACR_REG);
 	iowrite32(DMACR_RESET, base_address + MM2S_DMACR_REG);
 	MM2S_DMACR_val = ioread32(base_address + MM2S_DMACR_REG);
-
 	enInterrupt = MM2S_DMACR_val | IOC_IRQ_EN | ERR_IRQ_EN;
 	iowrite32(enInterrupt, base_address + MM2S_DMACR_REG);	
-
 	printk(KERN_INFO "[dma1_init] Successfully initialized DMA1 \n");
 	return 0;
 }
 int dma_init2(void __iomem *base_address) {
 	u32 S2MM_DMACR_val = 0;
 	u32 enInterrupt = 0;
-
+	iowrite32(0x0, base_address + S2MM_DMACR_REG);
 	iowrite32(DMACR_RESET, base_address + S2MM_DMACR_REG);
 	S2MM_DMACR_val = ioread32(base_address + S2MM_DMACR_REG);
-
 	enInterrupt = S2MM_DMACR_val | IOC_IRQ_EN | ERR_IRQ_EN;
 	iowrite32(enInterrupt, base_address + S2MM_DMACR_REG);	
-
 	printk(KERN_INFO "[dma2_init] Successfully initialized DMA2 \n");
 	return 0;
 }
@@ -609,54 +611,40 @@ int dma_init2(void __iomem *base_address) {
 unsigned int dma_simple_write1(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address) {
 	u32 MM2S_DMACR_val = 0;
 	u32 enInterrupt = 0;
-
 	MM2S_DMACR_val = ioread32(base_address + MM2S_DMACR_REG);
-
 	enInterrupt = MM2S_DMACR_val | IOC_IRQ_EN | ERR_IRQ_EN;
 	iowrite32(enInterrupt, base_address + MM2S_DMACR_REG);
-	
 	MM2S_DMACR_val = ioread32(base_address + MM2S_DMACR_REG);
 	MM2S_DMACR_val |= DMACR_RUN_STOP;
 	iowrite32(MM2S_DMACR_val, base_address + MM2S_DMACR_REG);
-
 	iowrite32((u32)TxBufferPtr, base_address + MM2S_SA_REG);
 	iowrite32(pkt_len, base_address + MM2S_LENGTH_REG);
-	
-	printk(KERN_INFO "[dma_simple_write1] Successfully wrote DMA1 \n");
+	printk(KERN_INFO "[dma_simple_write1] Successfully wrote in DMA1 \n");
 	return 0;
 	
 }
 unsigned int dma_simple_write2(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address) {
 	u32 MM2S_DMACR_val = 0;
 	u32 enInterrupt = 0;
-
 	MM2S_DMACR_val = ioread32(base_address + MM2S_DMACR_REG);
-
 	enInterrupt = MM2S_DMACR_val | IOC_IRQ_EN | ERR_IRQ_EN;
 	iowrite32(enInterrupt, base_address + MM2S_DMACR_REG);
-	
 	MM2S_DMACR_val = ioread32(base_address + MM2S_DMACR_REG);
 	MM2S_DMACR_val |= DMACR_RUN_STOP;
 	iowrite32(MM2S_DMACR_val, base_address + MM2S_DMACR_REG);
-
 	iowrite32((u32)TxBufferPtr, base_address + MM2S_SA_REG);
 	iowrite32(pkt_len, base_address + MM2S_LENGTH_REG);	
-	
-	printk(KERN_INFO "[dma_simple_write2] Successfully wrote DMA2 \n");
+	printk(KERN_INFO "[dma_simple_write2] Successfully wrote in DMA2 \n");
 	return 0;
 }
 unsigned int dma_simple_read(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address) {
 	u32 S2MM_DMACR_value;
-
 	S2MM_DMACR_value = ioread32(base_address + S2MM_DMACR_REG);
-	
 	S2MM_DMACR_value |= DMACR_RUN_STOP; 
 	iowrite32(S2MM_DMACR_value, base_address + S2MM_DMACR_REG);
-	
 	iowrite32((u32)TxBufferPtr, base_address + S2MM_DA_REG);
 	iowrite32(pkt_len, base_address + S2MM_LENGTH_REG);
-	
-	printk(KERN_INFO "[dma_simple_read] Successfully read DMA \n");
+	printk(KERN_INFO "[dma_simple_read] Successfully read from DMA2 \n");
 	return 0;
 }
 
@@ -666,36 +654,26 @@ unsigned int dma_simple_read(dma_addr_t TxBufferPtr, unsigned int pkt_len, void 
 
 static irqreturn_t dma0_MM2S_isr(int irq, void* dev_id) {
 	unsigned int IrqStatus;  
-	/* DMA0 transaction has been complited and interrupt occures, flag needs to be cleared */
-	/* Clearing MM2S flag */
 	IrqStatus = ioread32(dma0_p->base_addr + MM2S_STATUS_REG);
-	iowrite32(IrqStatus | 0x00005000, dma0_p->base_addr + MM2S_STATUS_REG);
-	/* Tell rest of the code that interrupt has happened */
+	iowrite32(IrqStatus | 0x00007000, dma0_p->base_addr + MM2S_STATUS_REG);
 	transaction_over0 = 0;
 	printk(KERN_INFO "[dma0_isr] Finished DMA0 MM2S transaction!\n");
 	return IRQ_HANDLED;
 }
 static irqreturn_t dma1_MM2S_isr(int irq, void* dev_id) {
 	unsigned int IrqStatus;  
-	/* DMA1 transaction has been complited and interrupt occures, flag needs to be cleared */
-	/* Clearing MM2S flag */
 	IrqStatus = ioread32(dma1_p->base_addr + MM2S_STATUS_REG);
-	iowrite32(IrqStatus | 0x00005000, dma1_p->base_addr + MM2S_STATUS_REG);
-	/* Tell rest of the code that interrupt has happened */
+	iowrite32(IrqStatus | 0x00007000, dma1_p->base_addr + MM2S_STATUS_REG);
 	transaction_over1 = 0;
 	printk(KERN_INFO "[dma1_isr] Finished DMA1 MM2S transaction!\n");
 	return IRQ_HANDLED;
 }
 static irqreturn_t dma2_S2MM_isr(int irq, void* dev_id){
 	unsigned int IrqStatus;  
-	/* DMA2 transaction has been complited and interrupt occures, flag needs to be cleared */
-	/* Clearing S2MM flag */
 	IrqStatus = ioread32(dma2_p->base_addr + S2MM_STATUS_REG);
-	iowrite32(IrqStatus | 0x00005000, dma2_p->base_addr + S2MM_STATUS_REG);
-	/* Tell rest of the code that interrupt has happened */
+	iowrite32(IrqStatus | 0x00007000, dma2_p->base_addr + S2MM_STATUS_REG);
 	transaction_over2 = 0;
 	printk(KERN_INFO "[dma2_isr] Finished DMA2 S2MM transaction!\n");
 	return IRQ_HANDLED;
 }
 
-/* Kernel headers */
