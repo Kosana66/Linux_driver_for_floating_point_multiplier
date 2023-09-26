@@ -20,13 +20,24 @@
 #include <linux/of.h>
 #include <linux/dma-mapping.h>  
 #include <linux/mm.h>
+#include <linux/wait.h>
+#include <linux/semaphore.h>
 
 MODULE_AUTHOR("Kosana Mina Matija");
 MODULE_DESCRIPTION("FPM IP core driver");
 MODULE_LICENSE("Dual BSD/GPL");
 
-#define DRIVER_NAME "fpm_driver" 
-#define BUFF_SIZE 200
+#define DRIVER_NAME 	"fpm_driver" 
+#define BUFF_SIZE 	200
+#define NIZ_SIZE 	5
+
+int counter_out = 0;
+int pos_out = 0;
+int endRead = 0;
+int pos_in = 0;
+int cnt_in = 0;
+int cnt = 0;
+struct semaphore sem;
 
 /* -------------------------------------- */
 /* --------FPM IP RELATED MACROS--------- */
@@ -134,9 +145,11 @@ static struct platform_driver fpm_driver = {
 dma_addr_t tx_phy_buffer;
 u32 *tx_vir_buffer;
 int device_fsm = 0;
-int transaction_over0 = 0;
-int transaction_over1 = 0;
-int transaction_over2 = 0;
+volatile int transaction_over0 = 0;
+volatile int transaction_over1 = 0;
+volatile int transaction_over2 = 0;
+u32 izlazni_niz[NIZ_SIZE];
+u32 ulazni_niz[NIZ_SIZE * 2];
 
 /* -------------------------------------- */
 /* -------INIT AND EXIT FUNCTIONS-------- */
@@ -172,6 +185,7 @@ static int __init fpm_init(void) {
 	}
 	printk(KERN_INFO "[fpm_init] Module init done\n");
 	tx_vir_buffer = dma_alloc_coherent(my_device, MAX_PKT_LEN, &tx_phy_buffer, GFP_DMA | GFP_KERNEL);
+	printk(KERN_INFO "VIRTAUL %#x\n", *tx_vir_buffer);
 	printk(KERN_INFO "[fpm_init] Virtual and physical addresses coherent starting at %#x and ending at %#x\n", tx_phy_buffer, tx_phy_buffer+(uint)(MAX_PKT_LEN));
 	if(!tx_vir_buffer) {
 		printk(KERN_ALERT "[fpm_init] Could not allocate dma_alloc_coherent");
@@ -440,19 +454,38 @@ int fpm_close(struct inode *pinode, struct file *pfile) {
 
 ssize_t fpm_read(struct file *pfile, char __user *buf, size_t length, loff_t *offset) {		
 	char buff[BUFF_SIZE];
-	u32 output = 0;
 	int ret = 0; 
-	dma_simple_read(tx_phy_buffer, MAX_PKT_LEN, dma2_p->base_addr);
-	output = *tx_vir_buffer;
-	printk(KERN_WARNING "[fpm_read] Result: %#x\n", output);
-	length = scnprintf(buff, BUFF_SIZE, "%u", output);
-	ret = copy_to_user(buf, buff, length);
-	if(ret) {
-		printk(KERN_WARNING "[fpm_read] Copy to user failed\n");
-		return -EFAULT;
+
+	if(endRead) {
+		endRead = 0;
+		counter_out = 0;
+		return 0;
 	}
-	printk(KERN_INFO "[fpm_read] Succesfully read driver\n");
-	return 0;
+	if(pos_out > 0) {
+		if(counter_out < pos_out) {
+			length = scnprintf(buff, BUFF_SIZE, "RES %d: %#x\n", counter_out, izlazni_niz[counter_out]);
+			ret = copy_to_user(buf, buff, length);
+			if(ret) {
+				printk(KERN_WARNING "[fpm_read] Copy to user failed\n");
+				return -EFAULT;
+			}
+			counter_out++;
+		}
+		if(counter_out == pos_out) {
+			endRead = 1;
+			counter_out = 0;
+			pos_out = 0;
+			pos_in = 0;
+			cnt_in = 0;
+			cnt = 0;
+		}
+	}	
+	else {
+		printk(KERN_INFO "[fpm_read] Driver is empty\n");
+	}
+	//printk(KERN_INFO "[fpm_read] Succesfully read driver\n");
+	return length;
+
 }
 
 ssize_t fpm_write(struct file *pfile, const char __user *buf, size_t length, loff_t *offset) {
@@ -484,67 +517,127 @@ ssize_t fpm_write(struct file *pfile, const char __user *buf, size_t length, lof
 
 	
 	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
+
 	
 	char buff[BUFF_SIZE];
 	int ret;
 	char str1[50];
 	char str2[50];
 	long int tmp1, tmp2;
-	u32 operand1, operand2;
-	ret = copy_from_user(buff, buf, length);
-    	if (ret) {
-       		 printk(KERN_WARNING "[fpm_write] copy from user failed\n");
-       		 return -EFAULT;
-   	}
-	buff[length] = '\0';
-	ret = sscanf(buff, "%50[^,], %50[^ ] ", str1, str2);
-	if(ret != 2){
-		printk(KERN_WARNING "[fpm_write] parsing failed\n");
-        	return -EFAULT;
+	if(pos_in < (NIZ_SIZE*2-1)) {
+		ret = copy_from_user(buff, buf, length);
+    		if (ret) {
+       			 printk(KERN_WARNING "[fpm_write] copy from user failed\n");
+       			 return -EFAULT;
+   		}
+		buff[length] = '\0';
+		ret = sscanf(buff, "%50[^,], %50[^ ] ", str1, str2);
+		if(ret != 2){
+			printk(KERN_WARNING "[fpm_write] parsing failed\n");
+       		 	return -EFAULT;
+		}
+		if(str1[0] == '0' && str1[1] == 'x') {
+			ret = kstrtol(str1 + 2, 16, &tmp1);
+			ulazni_niz[pos_in] = (u32)tmp1;
+			printk(KERN_INFO "[fpm_write] POS %d: %#x\n", pos_in, ulazni_niz[pos_in]);	
+			pos_in++;
+		}	
+		if(str2[0] == '0' && str2[1] == 'x') {
+			ret = kstrtol(str2 + 2, 16, &tmp2);
+			ulazni_niz[pos_in] = (u32)tmp2;
+			printk(KERN_INFO "[fpm_write] POS %d: %#x\n", pos_in, ulazni_niz[pos_in]);
+			pos_in++;
+		} 
+		if(cnt == 0) {
+			cnt++;
+			*tx_vir_buffer = ulazni_niz[cnt_in++];
+			transaction_over0 = 1;
+			dma_simple_write1(tx_phy_buffer, MAX_PKT_LEN, dma0_p->base_addr);
+			*tx_vir_buffer = ulazni_niz[cnt_in++];
+			transaction_over1 = 1;
+			dma_simple_write2(tx_phy_buffer, MAX_PKT_LEN, dma1_p->base_addr);		
+		}
 	}
-	if(str1[0] == '0' && str1[1] == 'x') {
-		ret = kstrtol(str1 + 2, 16, &tmp1);
-		operand1 = (u32)tmp1;
-		printk(KERN_WARNING "[fpm_write] Operand1: %#x\n", operand1);
+	else {
+		printk(KERN_WARNING "[fpm_write] Driver is full\n");
+		cnt = 1;
+	}
 
-	}
-	if(str2[0] == '0' && str2[1] == 'x') {
-		ret = kstrtol(str2 + 2, 16, &tmp2);
-		operand2 = (u32)tmp2;
-		printk(KERN_WARNING "[fpm_write] Operand2: %#x\n", operand2);
-	}
-	*tx_vir_buffer = operand1;
-	transaction_over0 = 1;
-	dma_simple_write1(tx_phy_buffer, MAX_PKT_LEN, dma0_p->base_addr);
-	*tx_vir_buffer = operand2;
-	transaction_over1 = 1;
-	dma_simple_write2(tx_phy_buffer, MAX_PKT_LEN, dma1_p->base_addr);
+	
+	return length;
+
 	
 	
+	
+
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+/*	
+	
+	char buff[BUFF_SIZE];
+	int ret;
+	char str1[50];
+	char str2[50];
+	long int tmp1, tmp2;
+	if(pos_in < (NIZ_SIZE*2-1)) {
+	//	if(down_interruptible(&sem))
+	//		return -ERESTARTSYS;
+		ret = copy_from_user(buff, buf, length);
+    		if (ret) {
+       			 printk(KERN_WARNING "[fpm_write] copy from user failed\n");
+       			 return -EFAULT;
+   		}
+		buff[length] = '\0';
+		ret = sscanf(buff, "%50[^,], %50[^ ] ", str1, str2);
+		if(ret != 2){
+			printk(KERN_WARNING "[fpm_write] parsing failed\n");
+       		 	return -EFAULT;
+		}
+		if(str1[0] == '0' && str1[1] == 'x') {
+			ret = kstrtol(str1 + 2, 16, &tmp1);
+			ulazni_niz[pos_in] = (u32)tmp1;
+			*tx_vir_buffer = ulazni_niz[pos_in];
+			transaction_over1 = 1;
+			dma_simple_write2(tx_phy_buffer, MAX_PKT_LEN, dma1_p->base_addr);
+			printk(KERN_INFO "[fpm_write] POS %d: %#x\n", pos_in, ulazni_niz[pos_in]);	
+		
+			}
+		pos_in++;
+		if(str2[0] == '0' && str2[1] == 'x') {
+			ret = kstrtol(str2 + 2, 16, &tmp2);
+			ulazni_niz[pos_in] = (u32)tmp2;
+			printk(KERN_INFO "[fpm_write] POS %d: %#x\n", pos_in, ulazni_niz[pos_in]);
+			*tx_vir_buffer = ulazni_niz[pos_in];
+			transaction_over0 = 1;
+			dma_simple_write1(tx_phy_buffer, MAX_PKT_LEN, dma0_p->base_addr);
+		}
+		pos_in++; 
+		dma_simple_read(tx_phy_buffer, MAX_PKT_LEN, dma2_p->base_addr);
+		izlazni_niz[pos_out] = *tx_vir_buffer;
+		printk(KERN_INFO "[fpm_write] RES %d: %#x\n", pos_out, izlazni_niz[pos_out]);
+		pos_out++;
+	//	up(&sem);
+	}
+	else {
+		printk(KERN_WARNING "[fpm_write] Driver is full\n");
+	}
+	return length;
+
+
+
+*/
 	printk(KERN_INFO "[fpm_write] Succesfully wrote in driver\n");
 	return length;
 }
@@ -619,7 +712,8 @@ unsigned int dma_simple_write1(dma_addr_t TxBufferPtr, unsigned int pkt_len, voi
 	iowrite32(MM2S_DMACR_val, base_address + MM2S_DMACR_REG);
 	iowrite32((u32)TxBufferPtr, base_address + MM2S_SA_REG);
 	iowrite32(pkt_len, base_address + MM2S_LENGTH_REG);
-	printk(KERN_INFO "[dma_simple_write1] Successfully wrote in DMA1 \n");
+	while(transaction_over0 == 1);
+	printk(KERN_INFO "[dma_simple_write1] Successfully wrote in DMA0 \n");
 	return 0;
 	
 }
@@ -634,7 +728,9 @@ unsigned int dma_simple_write2(dma_addr_t TxBufferPtr, unsigned int pkt_len, voi
 	iowrite32(MM2S_DMACR_val, base_address + MM2S_DMACR_REG);
 	iowrite32((u32)TxBufferPtr, base_address + MM2S_SA_REG);
 	iowrite32(pkt_len, base_address + MM2S_LENGTH_REG);	
-	printk(KERN_INFO "[dma_simple_write2] Successfully wrote in DMA2 \n");
+	while(transaction_over1 == 1);
+	printk(KERN_INFO "[dma_simple_write2] Successfully wrote in DMA1 \n");
+	dma_simple_read(tx_phy_buffer, MAX_PKT_LEN, dma2_p->base_addr);
 	return 0;
 }
 unsigned int dma_simple_read(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address) {
@@ -644,7 +740,23 @@ unsigned int dma_simple_read(dma_addr_t TxBufferPtr, unsigned int pkt_len, void 
 	iowrite32(S2MM_DMACR_value, base_address + S2MM_DMACR_REG);
 	iowrite32((u32)TxBufferPtr, base_address + S2MM_DA_REG);
 	iowrite32(pkt_len, base_address + S2MM_LENGTH_REG);
-	printk(KERN_INFO "[dma_simple_read] Successfully read from DMA2 \n");
+	transaction_over2 = 1;
+	while(transaction_over2 == 1);
+	izlazni_niz[pos_out] = *tx_vir_buffer;
+	printk(KERN_INFO "[fpm_write] RES %d: %#x\n", pos_out, izlazni_niz[pos_out]);
+	printk(KERN_INFO "[dma_simple_read] Successfully read from DMA2 \n");	
+	pos_out++;
+	if(cnt_in < (pos_in - 1)) {
+		*tx_vir_buffer = ulazni_niz[cnt_in++];
+		transaction_over0 = 1;
+		dma_simple_write1(tx_phy_buffer, MAX_PKT_LEN, dma0_p->base_addr);
+		*tx_vir_buffer = ulazni_niz[cnt_in++];
+		transaction_over1 = 1;
+		dma_simple_write2(tx_phy_buffer, MAX_PKT_LEN, dma1_p->base_addr);		
+	} 
+	else {
+		cnt = 0;
+	}
 	return 0;
 }
 
