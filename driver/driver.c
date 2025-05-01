@@ -56,7 +56,6 @@ int counter_out = 0;
 #define IOC_IRQ_EN				1<<12
 #define ERR_IRQ_EN				1<<14
 
-
 /* -------------------------------------- */
 /* --------FUNCTION DECLARATIONS--------- */
 /* -------------------------------------- */
@@ -611,8 +610,8 @@ unsigned int dma_simple_write1(dma_addr_t TxBufferPtr, unsigned int pkt_len, voi
 	while(transaction_over0 == 1);
 	printk(KERN_INFO "[dma_simple_write1] Successfully wrote in DMA0 \n");
 	*tx_vir_buffer = ulazni_niz[cnt_in++];
-	dma_simple_write2(tx_phy_buffer, MAX_PKT_LEN, dma1_p->base_addr);		return 0;
-	
+	dma_simple_write2(tx_phy_buffer, MAX_PKT_LEN, dma1_p->base_addr);	
+	return 0;
 }
 unsigned int dma_simple_write2(dma_addr_t TxBufferPtr, unsigned int pkt_len, void __iomem *base_address) {
 	u32 MM2S_DMACR_val = 0;
